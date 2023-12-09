@@ -7,8 +7,9 @@ use qdrant_client::client::QdrantClientConfig;
 use rust_a_rag_us::embedding::text_embedding_async;
 use rust_a_rag_us::embedding::{Model, EMBEDDING_SIZE};
 use rust_a_rag_us::ollama::{Llm, PROMPT};
-use rust_a_rag_us::qdrant::{add_documents, create_collection, search_documents};
-use rust_a_rag_us::retriever::sitemap;
+use rust_a_rag_us::qdrant::{add_documents, create_collections, search_documents};
+use rust_a_rag_us::retriever::{single_doc, sitemap};
+use tiktoken_rs::p50k_base;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -36,7 +37,7 @@ enum Command {
         #[clap(short, long)]
         query: String,
 
-        #[clap(short, long, default_value = "10")]
+        #[clap(short, long, default_value = "7")]
         limit: u64,
 
         #[clap(long, default_value = "http://localhost")]
@@ -49,6 +50,10 @@ enum Command {
         ollama_model: String,
     },
     Drop {},
+    SingleDoc {
+        #[clap(short, long)]
+        url: String,
+    },
 }
 
 #[tokio::main]
@@ -58,7 +63,7 @@ async fn main() -> Result<(), Error> {
 
     let config = QdrantClientConfig::from_url(&args.address);
     let client = QdrantClient::new(Some(config))?;
-    create_collection(&client, &args.collection, EMBEDDING_SIZE).await?;
+    create_collections(&client, &args.collection, EMBEDDING_SIZE).await?;
 
     match args.command {
         Command::Upload { url } => {
@@ -107,6 +112,9 @@ async fn main() -> Result<(), Error> {
                 .replace("{context}", &text)
                 .replace("{question}", &query.clone());
             info!("Formatted prompt: {}", formatted_prompt);
+            let bpe = p50k_base().unwrap();
+            let tokens = bpe.encode_with_special_tokens(&formatted_prompt);
+            println!("Token count: {}", tokens.len());
             let start = std::time::Instant::now();
             let answer = llm
                 .generate(ollama_model.clone(), formatted_prompt.clone())
@@ -122,6 +130,14 @@ async fn main() -> Result<(), Error> {
         Command::Drop {} => {
             info!("Dropping collection {}", args.collection);
             client.delete_collection(&args.collection).await?;
+        }
+        Command::SingleDoc { url } => {
+            info!("Fetching {}", url);
+            let doc = single_doc(&url).await?;
+            info!("Fetched doc: {:?}", doc);
+            let bpe = p50k_base().unwrap();
+            let tokens = bpe.encode_with_special_tokens(&doc.text);
+            println!("Token count: {}", tokens.len());
         }
     }
 

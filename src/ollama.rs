@@ -5,15 +5,18 @@ use ollama_rs::{
 use tokio::io::{stdout, AsyncWriteExt};
 use tokio_stream::StreamExt;
 
+// Llm is a wrapper around the Ollama client
 pub struct Llm {
     ollama: Ollama,
 }
 
 impl Llm {
+    // new creates a new Llm
     pub fn new(ollama: Ollama) -> Self {
         Llm { ollama: ollama }
     }
 
+    // generate generates text from a prompt
     pub async fn generate(&self, model: String, prompt: String) -> Result<String, anyhow::Error> {
         let res = self
             .ollama
@@ -28,6 +31,7 @@ impl Llm {
             }
         }
     }
+    // generate_stream generates a stream of text currently hardwired to stdout from a prompt
     pub async fn generate_stream(
         &self,
         model: String,
@@ -46,20 +50,14 @@ impl Llm {
     }
 }
 
-pub static PROMPT: &str = r#"You are a customer support agent. You are designed to be as helpful as possible while providing only factual information. You should be friendly, but not overly chatty. Context information is below. Given the context information and not prior knowledge, answer the query.
+pub static PROMPT: &str = r#"You are a customer support agent, programmed to offer highly accurate and helpful assistance. Your responses should be strictly based on factual information, presented in a friendly yet concise manner. Utilize only the context information provided below, without drawing on any prior knowledge. Your goal is to address the query directly and efficiently, ensuring clarity and relevance in your answer.
 Context:
 {context}
 
 Question: {question}
 Helpful answer thats includes a heading derived from the question:"#;
 
-//pub static PROMPT: &str = r#"Answer the question based on the context below. Please provide a detailed and structured and well formated response.
-//The output should be structured with a heading derived from the question below, and use a star to designate a list item.
-//If the question cannont be answered using the information provider answer with "I dont't Know".
-//
-//Context:
-//{context}
-//
-//Question: {question}
-//Helpful answer thats includes a heading derived from the question:"#;
-//
+pub static PROMPT_SUMMARY: &str = r#"You are an advanced summary agent. Your task is to generate a concise and accurate summary based solely on the context information provided below. Do not rely on prior knowledge. Focus on distilling the key points and essential details into a brief, coherent summary.
+Context:
+{context}
+"#;

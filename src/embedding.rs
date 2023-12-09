@@ -14,21 +14,27 @@ use rust_bert::pipelines::sentence_embeddings::{
 
 use log::{debug, info};
 
+// EMBEDDING_SIZE represents the size of the embedding
 pub static EMBEDDING_SIZE: u64 = 384;
 
+// Message represents a message
 type Message = (Document, oneshot::Sender<Vec<EmbeddedDocument>>);
 
+// Model represents a model
+// based on https://github.com/guillaume-be/rust-bert/blob/main/examples/async-sentiment.rs
 pub struct Model {
     sender: mpsc::SyncSender<Message>,
 }
 
 impl Model {
+    // spawn returns a new model and a handle to the model
     pub fn spawn() -> (JoinHandle<anyhow::Result<()>>, Model) {
         let (sender, receiver) = mpsc::sync_channel(100);
         let handle = thread::spawn(move || Self::runner(receiver));
         (handle, Model { sender })
     }
 
+    // runner runs the model
     fn runner(receiver: mpsc::Receiver<Message>) -> anyhow::Result<(), Error> {
         debug!("Starting model runner");
         debug!("Loading remote model");
@@ -41,14 +47,25 @@ impl Model {
             let mut embedded_documents = Vec::new();
             let mut document_average_time = vec![];
             let doc_start = Instant::now();
-            for fragmenent in document.to_fragments() {
+            let fragments = document.to_fragments();
+            let it = fragments.text.iter().zip(fragments.meta_text.iter());
+
+            for (text_fragmenent, meta_fragment) in it {
                 let fragment_start = Instant::now();
-                let embedding = model
-                    .encode(&[fragmenent.clone()])
+                let text_embedding = model
+                    .encode(&[text_fragmenent.clone()])
+                    .expect("Could not embed fragment");
+                let meta_embedding = model
+                    .encode(&[meta_fragment.clone()])
                     .expect("Could not embed fragment");
                 embedded_documents.push(EmbeddedDocument {
-                    embeddings: embedding[0].clone(),
-                    metadata: EmbeddedMetadata::from_document(&document, fragmenent),
+                    text_embeddings: text_embedding[0].clone(),
+                    meta_embeddings: meta_embedding[0].clone(),
+                    metadata: EmbeddedMetadata::from_document(
+                        &document,
+                        text_fragmenent.clone(),
+                        meta_fragment.clone(),
+                    ),
                 });
                 document_average_time.push(fragment_start.elapsed());
             }
@@ -71,6 +88,7 @@ impl Model {
         Ok(())
     }
 
+    // encode returns a vector of embedded documents
     pub async fn encode(&self, document: Document) -> Result<Vec<EmbeddedDocument>, Error> {
         let (sender, receiver) = oneshot::channel();
         task::block_in_place(|| self.sender.send((document, sender)))?;
@@ -78,6 +96,7 @@ impl Model {
     }
 }
 
+// text_embedding_async returns a text embedding for a given text in a as
 pub async fn text_embedding_async(text: String) -> Vec<f32> {
     let handle = tokio::task::spawn_blocking(move || {
         let embeds = get_text_embedding(&text);
@@ -88,6 +107,7 @@ pub async fn text_embedding_async(text: String) -> Vec<f32> {
     res
 }
 
+// get_text_embedding returns a text embedding for a given text
 pub fn get_text_embedding(text: &str) -> Vec<f32> {
     let model_start = Instant::now();
     let model = SentenceEmbeddingsBuilder::remote(SentenceEmbeddingsModelType::AllMiniLmL12V2)
