@@ -21,7 +21,8 @@ pub async fn sitemap(url: &str) -> Result<Vec<Document>, Error> {
     };
     let text = resp.text().await?;
     let document = Html::parse_document(&text);
-    let selector = Selector::parse(r#"loc"#).unwrap();
+    let selector =
+        Selector::parse(r#"loc"#).or(Err(anyhow::anyhow!("Failed to parse loc selector")))?;
     let mut documents = Vec::new();
     for sitemap_url in document.select(&selector) {
         info!("Fetching {}", sitemap_url.inner_html());
@@ -32,7 +33,7 @@ pub async fn sitemap(url: &str) -> Result<Vec<Document>, Error> {
 }
 
 // fetch_content returns a document from a url
-async fn fetch_content(url: &str) -> Result<data::Document, Error> {
+pub async fn fetch_content(url: &str) -> Result<data::Document, Error> {
     let resp = reqwest::get(url).await?;
 
     let body = resp.text().await?;
@@ -41,7 +42,9 @@ async fn fetch_content(url: &str) -> Result<data::Document, Error> {
     let document = Html::parse_document(&body);
 
     // Extract the title
-    let title_selector = Selector::parse("title").unwrap();
+    let title_selector =
+        Selector::parse("title").or(Err(anyhow::anyhow!("Failed to parse title selector")))?;
+
     let title = document
         .select(&title_selector)
         .next()
@@ -50,61 +53,14 @@ async fn fetch_content(url: &str) -> Result<data::Document, Error> {
     info!("found title: {} on url: {}", title, url);
 
     // Create a selector for the body element
-    let body_selector = Selector::parse("body").unwrap();
+    let body_selector =
+        Selector::parse("body").or(Err(anyhow::anyhow!("Failed to parse body selector")))?;
 
     // Extract the body element
     if let Some(body_element) = document.select(&body_selector).next() {
-        // Remove script elements from the body
-        let script_selector = Selector::parse("script").unwrap();
-        let cleaned_body_html = body_element
-            .select(&script_selector)
-            .fold(body_element.html(), |acc, script| {
-                acc.replace(script.html().as_str(), "")
-            });
-
-        // Parse the cleaned body HTML
-        let cleaned_body_document = Html::parse_fragment(&cleaned_body_html);
-        let text_one_liner =
-            cleaned_body_document
-                .root_element()
-                .text()
-                .fold(String::from(""), |acc, node| {
-                    let text = node.trim();
-                    if text.len() > 0 {
-                        format!("{} {}", acc, text)
-                    } else {
-                        acc
-                    }
-                });
-        return Ok(data::Document::new(url.to_string(), title, text_one_liner));
-    }
-    Err(anyhow::anyhow!("Failed to fetch content"))
-}
-
-pub async fn single_doc(url: &str) -> Result<Document, Error> {
-    let resp = reqwest::get(url).await?;
-
-    let body = resp.text().await?;
-
-    // Parse the HTML
-    let document = Html::parse_document(&body);
-
-    // Extract the title
-    let title_selector = Selector::parse("title").unwrap();
-    let title = document
-        .select(&title_selector)
-        .next()
-        .map_or(String::from(""), |n| n.text().collect());
-
-    info!("found title: {} on url: {}", title, url);
-
-    // Create a selector for the body element
-    let body_selector = Selector::parse("body").unwrap();
-
-    // Extract the body element
-    if let Some(body_element) = document.select(&body_selector).next() {
-        // Remove script elements from the body
-        let unwanted_selector = Selector::parse("script, nav").unwrap();
+        // Remove script and nav elements from the body
+        let unwanted_selector = Selector::parse("script, nav")
+            .or(Err(anyhow::anyhow!("Failed to parse unwanted selector")))?;
         let cleaned_body_html = body_element
             .select(&unwanted_selector)
             .fold(body_element.html(), |acc, unwanted| {
@@ -125,7 +81,12 @@ pub async fn single_doc(url: &str) -> Result<Document, Error> {
                         acc
                     }
                 });
-        return Ok(Document::new(url.to_string(), title, text_one_liner));
+        return Ok(data::Document::new(
+            data::Collection::Basic,
+            url.to_string(),
+            title,
+            text_one_liner,
+        ));
     }
     Err(anyhow::anyhow!("Failed to fetch content"))
 }

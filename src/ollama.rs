@@ -1,3 +1,4 @@
+use log::debug;
 use ollama_rs::{
     generation::completion::{request::GenerationRequest, GenerationResponseStream},
     Ollama,
@@ -17,10 +18,13 @@ impl Llm {
     }
 
     // generate generates text from a prompt
-    pub async fn generate(&self, model: String, prompt: String) -> Result<String, anyhow::Error> {
+    pub async fn generate(&self, model: &str, prompt: &str) -> Result<String, anyhow::Error> {
         let res = self
             .ollama
-            .generate(GenerationRequest::new(model, prompt))
+            .generate(GenerationRequest::new(
+                model.to_string(),
+                prompt.to_string(),
+            ))
             .await;
         match res {
             Ok(res) => {
@@ -32,14 +36,13 @@ impl Llm {
         }
     }
     // generate_stream generates a stream of text currently hardwired to stdout from a prompt
-    pub async fn generate_stream(
-        &self,
-        model: String,
-        prompt: String,
-    ) -> Result<(), anyhow::Error> {
+    pub async fn generate_stream(&self, model: &str, prompt: &str) -> Result<(), anyhow::Error> {
         let mut stream: GenerationResponseStream = self
             .ollama
-            .generate_stream(GenerationRequest::new(model, prompt))
+            .generate_stream(GenerationRequest::new(
+                model.to_string(),
+                prompt.to_string(),
+            ))
             .await?;
         let mut stdout = stdout();
         while let Some(Ok(res)) = stream.next().await {
@@ -47,6 +50,11 @@ impl Llm {
             stdout.flush().await?;
         }
         Ok(())
+    }
+    pub async fn summarize(&self, model: &str, text: &str) -> Result<String, anyhow::Error> {
+        let formatted_prompt = PROMPT_SUMMARY.replace("{context}", text);
+        debug!("Formatted summary prompt: {}", formatted_prompt);
+        self.generate(model, &formatted_prompt).await
     }
 }
 
@@ -57,7 +65,8 @@ Context:
 Question: {question}
 Helpful answer thats includes a heading derived from the question:"#;
 
-pub static PROMPT_SUMMARY: &str = r#"You are an advanced summary agent. Your task is to generate a concise and accurate summary based solely on the context information provided below. Do not rely on prior knowledge. Focus on distilling the key points and essential details into a brief, coherent summary.
+//pub static PROMPT_SUMMARY: &str = r#"You are an advanced summarization agent, your objective is to craft a succinct and precise summary using only the context information given. Your approach should center on extracting and condensing the critical elements and core details into a brief and clear format. Avoid referencing the creation of a summary in your output or stating that it's a summary.
+pub static PROMPT_SUMMARY: &str = r#"Your role as an advanced summarization agent involves distilling the provided context information into a concise and precise format. Emphasize extracting and synthesizing the main points and critical details, presenting them in a clear, compact form. In your output, seamlessly integrate these key elements without explicitly labeling the output as a summary or indicating the summarization process.
 Context:
 {context}
 "#;

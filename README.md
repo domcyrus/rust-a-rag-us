@@ -38,7 +38,11 @@ Options:
 Point it to upload some data like this:
 
 ```sh
+# basic example
 rust-a-rag-us upload --url https://docs.lagoon.sh/
+
+# setting logger and using collections
+RUST_LOG='info,rust_a_rag_us=debug' rust-a-rag-us --filter-collections="basic,summary" upload --url='https://docs.lagoon.sh/'
 ```
 
 ### cleanup data

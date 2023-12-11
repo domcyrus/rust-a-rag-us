@@ -12,7 +12,7 @@ use rust_bert::pipelines::sentence_embeddings::{
     SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType,
 };
 
-use log::{debug, info};
+use log::info;
 
 // EMBEDDING_SIZE represents the size of the embedding
 pub static EMBEDDING_SIZE: u64 = 384;
@@ -36,8 +36,7 @@ impl Model {
 
     // runner runs the model
     fn runner(receiver: mpsc::Receiver<Message>) -> anyhow::Result<(), Error> {
-        debug!("Starting model runner");
-        debug!("Loading remote model");
+        info!("Loading remote embedding model");
         let model = SentenceEmbeddingsBuilder::remote(SentenceEmbeddingsModelType::AllMiniLmL12V2)
             .with_device(Device::cuda_if_available())
             .create_model()
@@ -47,25 +46,19 @@ impl Model {
             let mut embedded_documents = Vec::new();
             let mut document_average_time = vec![];
             let doc_start = Instant::now();
-            let fragments = document.to_fragments();
-            let it = fragments.text.iter().zip(fragments.meta_text.iter());
-
-            for (text_fragmenent, meta_fragment) in it {
+            let fragments = document.to_fragments()?;
+            for fragment in fragments {
                 let fragment_start = Instant::now();
                 let text_embedding = model
-                    .encode(&[text_fragmenent.clone()])
-                    .expect("Could not embed fragment");
-                let meta_embedding = model
-                    .encode(&[meta_fragment.clone()])
+                    .encode(&[fragment.text.clone()])
                     .expect("Could not embed fragment");
                 embedded_documents.push(EmbeddedDocument {
                     text_embeddings: text_embedding[0].clone(),
-                    meta_embeddings: meta_embedding[0].clone(),
                     metadata: EmbeddedMetadata::from_document(
                         &document,
-                        text_fragmenent.clone(),
-                        meta_fragment.clone(),
-                    ),
+                        fragment.text.clone(),
+                        fragment.collection.clone(),
+                    )?,
                 });
                 document_average_time.push(fragment_start.elapsed());
             }

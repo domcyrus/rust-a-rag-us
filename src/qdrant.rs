@@ -1,24 +1,28 @@
-use crate::data::EmbeddedMetadata;
+use crate::data::{Collection, EmbeddedMetadata};
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{error, info};
 use qdrant_client::prelude::*;
 use qdrant_client::qdrant::vectors_config::Config;
 use qdrant_client::qdrant::{CreateCollection, SearchPoints, VectorParams, Vectors, VectorsConfig};
 use qdrant_client::serde::PayloadConversionError;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::data::EmbeddedDocument;
 
 // create_collections creates two collections one for text and one for meta with the given name and size
-pub async fn create_collections(client: &QdrantClient, collection: &str, size: u64) -> Result<()> {
-    // we create two collctions, one for text embeddings and one for meta embeddings
-    let text_collection = format!("{}_text", collection);
-    let meta_collection = format!("{}_meta", collection);
-
-    create_collection(client, &text_collection, size).await?;
-    create_collection(client, &meta_collection, size).await?;
-
+pub async fn create_collections(
+    client: &QdrantClient,
+    collection_base: &str,
+    collections: Vec<Collection>,
+    size: u64,
+) -> Result<()> {
+    info!("Creating collections, with base: {}", collection_base);
+    for collection in collections {
+        let collection_name = format!("{}_{}", collection_base, collection.to_string());
+        create_collection(client, &collection_name, size).await?;
+    }
     Ok(())
 }
 
@@ -48,12 +52,12 @@ async fn create_collection(client: &QdrantClient, collection: &str, size: u64) -
 // add_documents adds documents to a collection
 pub async fn add_documents(
     client: &QdrantClient,
-    collection: &str,
+    collection_base: &str,
+    filter_by_collections: Vec<Collection>,
     documents: Vec<EmbeddedDocument>,
 ) -> Result<()> {
-    let text_collection = format!("{}_text", collection);
-    let meta_collection = format!("{}_meta", collection);
-    for collection_name in vec![text_collection.clone(), meta_collection.clone()] {
+    for collection_name in filter_by_collections.clone() {
+        let collection_name = format!("{}_{}", collection_base, collection_name.to_string());
         if !client.has_collection(&collection_name).await? {
             return Err(anyhow::anyhow!(
                 "Collection: {} does not exist",
@@ -61,23 +65,38 @@ pub async fn add_documents(
             ));
         }
     }
-    let mut text_points: Vec<PointStruct> = vec![];
-    let mut meta_points: Vec<PointStruct> = vec![];
+    let mut text_points: HashMap<Collection, Vec<PointStruct>> = HashMap::new();
     let time_to_add = Instant::now();
     for document in documents {
+        // check if document by filter_by_collections
+        if !filter_by_collections.contains(&document.metadata.collection) {
+            info!(
+                "Skipping document: {} because it is not in filter_by_collections: {:?}",
+                document.metadata.id, filter_by_collections
+            );
+            continue;
+        }
+
         let payload: Result<Payload, PayloadConversionError> = json!(document.metadata).try_into();
         match payload {
+            // get text_points for collection
             Ok(payload) => {
-                text_points.push(PointStruct {
-                    id: Some(document.metadata.id.clone().into()),
-                    payload: payload.clone().into(),
-                    vectors: Some(Vectors::from(document.text_embeddings.clone())),
-                });
-                meta_points.push(PointStruct {
-                    id: Some(document.metadata.id.clone().into()),
-                    payload: payload.into(),
-                    vectors: Some(Vectors::from(document.meta_embeddings.clone())),
-                });
+                if let Some(point_vec) = text_points.get_mut(&document.metadata.collection) {
+                    point_vec.push(PointStruct {
+                        id: Some(document.metadata.id.clone().into()),
+                        payload: payload.clone().into(),
+                        vectors: Some(Vectors::from(document.text_embeddings.clone())),
+                    });
+                } else {
+                    text_points.insert(
+                        document.metadata.collection.clone(),
+                        vec![PointStruct {
+                            id: Some(document.metadata.id.clone().into()),
+                            payload: payload.clone().into(),
+                            vectors: Some(Vectors::from(document.text_embeddings.clone())),
+                        }],
+                    );
+                }
             }
             Err(e) => {
                 error!("Error converting payload: {}", e);
@@ -85,24 +104,23 @@ pub async fn add_documents(
             }
         }
     }
-    let num_text_points = text_points.len();
-    let num_meta_points = meta_points.len();
-    client
-        .upsert_points_blocking(&text_collection, text_points, None)
-        .await?;
+    let mut num_text_points = 0;
+
+    for (collection, points) in text_points {
+        let collection_name = format!("{}_{}", collection_base, collection.to_string());
+        info!(
+            "Adding {} documents to text collection: {}",
+            points.len(),
+            collection_name
+        );
+        num_text_points += points.len();
+        client
+            .upsert_points_blocking(&collection_name, points, None)
+            .await?;
+    }
     info!(
-        "Added {} documents to text collection: {} in elapsed time: {:?}",
+        "Added {} documents to qrdant in elapsed time: {:?}",
         num_text_points,
-        text_collection,
-        time_to_add.elapsed(),
-    );
-    client
-        .upsert_points_blocking(&meta_collection, meta_points, None)
-        .await?;
-    info!(
-        "Added {} documents to meta collection: {} in elapsed time: {:?}",
-        num_meta_points,
-        meta_collection,
         time_to_add.elapsed(),
     );
 
@@ -112,85 +130,65 @@ pub async fn add_documents(
 // search_documents searches for documents in a collection based on cosine distance of embeddings
 pub async fn search_documents(
     client: &QdrantClient,
-    collection: &str,
+    base_collection: &str,
+    filter_by_collections: Vec<Collection>,
     embeddings: Vec<f32>,
     limit: u64,
 ) -> Result<Vec<EmbeddedDocument>> {
-    let text_collection = format!("{}_text", collection);
-    let meta_collection = format!("{}_meta", collection);
+    // we will limit the search for each collection the same
+    let total_collections = filter_by_collections.len();
 
-    // we want to have 2 thirds of the limit for text and 1 third for meta
-    let text_limit = (limit as f64 * 0.50) as u64;
-    info!("text_limit: {}", text_limit);
-
-    let meta_limit = (limit as f64 * 0.50) as u64;
-    info!("meta_limit: {}", meta_limit);
-
-    let search_text_result = client
-        .search_points(&SearchPoints {
-            collection_name: text_collection.into(),
-            vector: embeddings.clone(),
-            filter: None,
-            limit: text_limit,
-            with_payload: Some(true.into()),
-            ..Default::default()
-        })
-        .await?;
-    debug!("text results: {:?}", &search_text_result);
-    let search_meta_result = client
-        .search_points(&SearchPoints {
-            collection_name: meta_collection.into(),
-            vector: embeddings,
-            filter: None,
-            limit: meta_limit,
-            with_payload: Some(true.into()),
-            ..Default::default()
-        })
-        .await?;
-    debug!("meta results: {:?}", &search_meta_result);
-    let mut results = vec![];
-    for result in search_text_result.result {
-        let metadata_json = serde_json::to_value(&result.payload)?;
-        let metadata: Result<EmbeddedMetadata, serde_json::Error> =
-            serde_json::from_value(metadata_json);
-
-        match metadata {
-            Ok(metadata) => {
-                let embedded_document = EmbeddedDocument {
-                    text_embeddings: vec![],
-                    meta_embeddings: vec![],
-                    metadata: metadata,
-                };
-                results.push(embedded_document);
+    let mut results = Vec::new();
+    for filter_collection in filter_by_collections.clone() {
+        let collection_name = format!("{}_{}", base_collection, filter_collection.to_string());
+        if !client.has_collection(&collection_name).await? {
+            return Err(anyhow::anyhow!(
+                "Collection: {} does not exist",
+                collection_name
+            ));
+        }
+        let mut collection_limit = limit;
+        if total_collections > 1 {
+            // multiply limit by filter_collection ratio
+            collection_limit = (limit as f32 * filter_collection.limit_by_collection()) as u64;
+            if collection_limit == 0 {
+                collection_limit = 1;
             }
-            Err(e) => {
-                error!("Error converting metadata: {}", e);
-                return Err(anyhow::anyhow!("Error converting metadata: {}", e));
+        }
+        info!(
+            "Searching collection: {} with limit: {}",
+            collection_name, collection_limit
+        );
+        let search_text_result = client
+            .search_points(&SearchPoints {
+                collection_name: collection_name.into(),
+                vector: embeddings.clone(),
+                filter: None,
+                limit: collection_limit,
+                with_payload: Some(true.into()),
+                ..Default::default()
+            })
+            .await?;
+        for search_result in search_text_result.result {
+            let metadata_json = serde_json::to_value(&search_result.payload)?;
+            let metadata: Result<EmbeddedMetadata, serde_json::Error> =
+                serde_json::from_value(metadata_json);
+
+            match metadata {
+                Ok(metadata) => {
+                    let embedded_document = EmbeddedDocument {
+                        text_embeddings: vec![],
+                        metadata: metadata,
+                    };
+                    results.push(embedded_document);
+                }
+                Err(e) => {
+                    error!("Error converting metadata: {}", e);
+                    return Err(anyhow::anyhow!("Error converting metadata: {}", e));
+                }
             }
         }
     }
-    for result in search_meta_result.result {
-        let metadata_json = serde_json::to_value(&result.payload)?;
-        let metadata: Result<EmbeddedMetadata, serde_json::Error> =
-            serde_json::from_value(metadata_json);
-
-        match metadata {
-            Ok(metadata) => {
-                let embedded_document = EmbeddedDocument {
-                    text_embeddings: vec![],
-                    meta_embeddings: vec![],
-                    metadata: metadata,
-                };
-                results.push(embedded_document);
-            }
-            Err(e) => {
-                error!("Error converting metadata: {}", e);
-                return Err(anyhow::anyhow!("Error converting metadata: {}", e));
-            }
-        }
-    }
-
-    debug!("result: {:?}", &results);
     Ok(results)
 }
 
