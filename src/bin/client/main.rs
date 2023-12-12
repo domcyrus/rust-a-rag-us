@@ -5,11 +5,14 @@ use ollama_rs::Ollama;
 use qdrant_client::client::QdrantClient;
 use qdrant_client::client::QdrantClientConfig;
 use rust_a_rag_us::data::Collection;
-use rust_a_rag_us::embedding::text_embedding_async;
-use rust_a_rag_us::embedding::{Model, EMBEDDING_SIZE};
+use rust_a_rag_us::embedding::{text_embedding_async, EmbeddingProgress, Model, EMBEDDING_SIZE};
 use rust_a_rag_us::ollama::{Llm, PROMPT};
+use rust_a_rag_us::progress_tracker::ProgressTracker;
 use rust_a_rag_us::qdrant::{add_documents, create_collections, search_documents};
 use rust_a_rag_us::retriever::{fetch_content, sitemap};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
 use tiktoken_rs::p50k_base;
 
 #[derive(Parser, Debug)]
@@ -47,7 +50,7 @@ enum Command {
         #[clap(long, default_value = "11434")]
         ollama_port: u16,
 
-        #[clap(long, default_value = "orca2:13b")]
+        #[clap(long, default_value = "openhermes2.5-mistral:7b-q6_K")]
         ollama_model: String,
     },
     Query {
@@ -63,7 +66,7 @@ enum Command {
         #[clap(long, default_value = "11434")]
         ollama_port: u16,
 
-        #[clap(long, default_value = "orca2:13b")]
+        #[clap(long, default_value = "openhermes2.5-mistral:7b-q6_K")]
         ollama_model: String,
     },
     Drop {},
@@ -77,7 +80,7 @@ enum Command {
         #[clap(long, default_value = "11434")]
         ollama_port: u16,
 
-        #[clap(long, default_value = "orca2:13b")]
+        #[clap(long, default_value = "openhermes2.5-mistral:7b-q6_K")]
         ollama_model: String,
     },
 }
@@ -112,10 +115,25 @@ async fn main() -> Result<(), Error> {
             let ollama = Ollama::new(ollama_host.to_string(), ollama_port);
             let llm = Llm::new(ollama);
 
-            let (_handle, model) = Model::spawn();
             let total_docs = docs.len();
             info!("Adding {} documents", total_docs);
 
+            let id = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_URL,
+                format!("{}{}", url, total_docs).as_bytes(),
+            );
+
+            let embedding_progress = EmbeddingProgress::new(total_docs);
+
+            let tracker = Arc::new(Mutex::new(HashMap::new()));
+            {
+                tracker
+                    .lock()
+                    .or(Err(anyhow::anyhow!("Could not lock tracker")))?
+                    .insert(id, embedding_progress);
+            }
+
+            let (_handle, model) = Model::spawn(tracker, id);
             let make_summary = args.filter_collections.contains(&Collection::Summary);
 
             for (i, doc) in docs.iter_mut().enumerate() {
@@ -175,7 +193,7 @@ async fn main() -> Result<(), Error> {
             debug!("Formatted prompt: {}", formatted_prompt);
             let bpe = p50k_base().unwrap();
             let tokens = bpe.encode_with_special_tokens(&formatted_prompt);
-            println!("Token count: {}", tokens.len());
+            info!("Token count: {}", tokens.len());
             let start = std::time::Instant::now();
             let answer = llm.generate(&ollama_model, &formatted_prompt).await?;
             info!(

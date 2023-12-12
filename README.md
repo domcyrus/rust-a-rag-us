@@ -55,6 +55,9 @@ rust-a-rag-us drop
 
 ```sh
 rust-a-rag-us query --query 'what lagoon service types can you in the docker compose yaml?'
+
+# using cargo run
+RUST_LOG=info cargo run --bin client -- --filter-collections="basic,summary" query --query 'what lagoon service types can you in the docker compose yaml?' --ollama_model openhermes2.5-mistral:7b-q6_K
 ```
 
 You can also switch the model used by providing e.g. --ollama_model 'openhermes2.5-mistral:7b-q6_K'

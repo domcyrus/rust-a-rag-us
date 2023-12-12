@@ -1,5 +1,13 @@
 use crate::data::{Document, EmbeddedDocument, EmbeddedMetadata};
-use anyhow::Error;
+use crate::progress_tracker::ProgressTracker;
+use anyhow::{Error, Result};
+use log::info;
+use rust_bert::pipelines::sentence_embeddings::{
+    SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{
     sync::mpsc,
@@ -7,18 +15,39 @@ use std::{
 };
 use tch::Device;
 use tokio::{sync::oneshot, task};
-
-use rust_bert::pipelines::sentence_embeddings::{
-    SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType,
-};
-
-use log::info;
+use uuid::Uuid;
 
 // EMBEDDING_SIZE represents the size of the embedding
 pub static EMBEDDING_SIZE: u64 = 384;
 
 // Message represents a message
 type Message = (Document, oneshot::Sender<Vec<EmbeddedDocument>>);
+
+// EmbeddingProgress represents the progress of an embedding task
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct EmbeddingProgress {
+    total_documents: usize,
+    processed_documents: usize,
+}
+
+impl ProgressTracker for EmbeddingProgress {
+    fn new(total_documents: usize) -> Self {
+        EmbeddingProgress {
+            total_documents: total_documents,
+            processed_documents: 0,
+        }
+    }
+
+    // increment_total increments the total documents
+    fn increment_processed(&mut self) {
+        self.processed_documents += 1;
+    }
+
+    // progress_status returns the current progress status
+    fn progress_status(&self) -> (usize, usize) {
+        (self.processed_documents, self.total_documents)
+    }
+}
 
 // Model represents a model
 // based on https://github.com/guillaume-be/rust-bert/blob/main/examples/async-sentiment.rs
@@ -28,14 +57,21 @@ pub struct Model {
 
 impl Model {
     // spawn returns a new model and a handle to the model
-    pub fn spawn() -> (JoinHandle<anyhow::Result<()>>, Model) {
+    pub fn spawn(
+        progress_state: Arc<Mutex<HashMap<Uuid, EmbeddingProgress>>>,
+        id: Uuid,
+    ) -> (JoinHandle<anyhow::Result<()>>, Model) {
         let (sender, receiver) = mpsc::sync_channel(100);
-        let handle = thread::spawn(move || Self::runner(receiver));
+        let handle = thread::spawn(move || Self::runner(receiver, progress_state, id));
         (handle, Model { sender })
     }
 
     // runner runs the model
-    fn runner(receiver: mpsc::Receiver<Message>) -> anyhow::Result<(), Error> {
+    fn runner(
+        receiver: mpsc::Receiver<Message>,
+        progress_state: Arc<Mutex<HashMap<Uuid, EmbeddingProgress>>>,
+        id: Uuid,
+    ) -> anyhow::Result<(), Error> {
         info!("Loading remote embedding model");
         let model = SentenceEmbeddingsBuilder::remote(SentenceEmbeddingsModelType::AllMiniLmL12V2)
             .with_device(Device::cuda_if_available())
@@ -76,6 +112,19 @@ impl Model {
             info!("Total Items: {}", total_items);
 
             sender.send(embedded_documents).expect("sending results");
+            let state = progress_state.lock();
+            match state {
+                Ok(mut state) => {
+                    if let Some(s) = state.get_mut(&id) {
+                        s.increment_processed();
+                    } else {
+                        return Err(anyhow::anyhow!("Failed to get state"));
+                    }
+                }
+                Err(_) => {
+                    return Err(anyhow::anyhow!("Failed to get state"));
+                }
+            }
         }
 
         Ok(())
