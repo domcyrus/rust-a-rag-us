@@ -7,6 +7,23 @@ use scraper::{Html, Selector};
 use tokio::sync::Semaphore;
 use tokio::task;
 
+// get_urls returns a vector of urls from a sitemap.xml
+//
+// function needs to be non async because scraper::Html is not Send, grmbl
+fn get_urls(body: String) -> Result<Vec<String>, Error> {
+    let document = Html::parse_document(&body);
+    let selector =
+        Selector::parse(r#"loc"#).or(Err(anyhow::anyhow!("Failed to parse loc selector")))?;
+
+    let mut urls = Vec::new();
+    for sitemap_url in document.select(&selector) {
+        info!("Fetching {}", sitemap_url.inner_html());
+        // TODO(marco): handle recursive sitemaps
+        urls.push(sitemap_url.inner_html().to_string());
+    }
+    Ok(urls)
+}
+
 // sitemap returns a vector of documents from a sitemap.xml
 pub async fn sitemap(url: &str) -> Result<Vec<Document>, Error> {
     let mut url_with_sitemap: String = url.to_string();
@@ -23,18 +40,9 @@ pub async fn sitemap(url: &str) -> Result<Vec<Document>, Error> {
         }
     };
     let text = resp.text().await?;
-    let document = Html::parse_document(&text);
-    let selector =
-        Selector::parse(r#"loc"#).or(Err(anyhow::anyhow!("Failed to parse loc selector")))?;
-
-    let mut urls = Vec::new();
-    for sitemap_url in document.select(&selector) {
-        info!("Fetching {}", sitemap_url.inner_html());
-        // TODO(marco): handle recursive sitemaps
-        urls.push(sitemap_url.inner_html().to_string());
-    }
+    let urls = get_urls(text)?;
     let bodies = fetch_bodies(urls).await?;
-    let documents = parse_contents(bodies).await?;
+    let documents = parse_contents(bodies)?;
     Ok(documents)
 }
 
@@ -46,53 +54,46 @@ struct Body {
     body: String,
 }
 
+// fetch_bodies returns a vector of bodies from a vector of urls
 async fn fetch_bodies(urls: Vec<String>) -> Result<Vec<Body>, Error> {
     let now = std::time::Instant::now();
     let semaphore = Arc::new(Semaphore::new(CONCURRENT_REQUESTS));
-    let mut bodies = Vec::new();
     let mut tasks = Vec::new();
+
     for url in urls {
         let permit = semaphore.clone().acquire_owned().await?;
+        let client = reqwest::Client::new(); // Moved outside the task
         let task = task::spawn(async move {
-            let client = reqwest::Client::new();
-            let response = client.get(&url).send().await;
-            let response = match response {
-                Ok(x) => x,
-                Err(err) => {
-                    return Err(anyhow::anyhow!(
-                        "Failed to fetch url: {} with error: {}",
-                        url,
-                        err.to_string()
-                    ))
-                }
+            let response = match client.get(&url).send().await {
+                Ok(resp) => resp,
+                Err(err) => return Err(anyhow::anyhow!("Error fetching URL {}: {}", url, err)),
             };
 
-            // Read the response body
-            let body = Body {
-                url: url,
-                body: response.text().await?,
-            };
-            drop(permit); // Release the permit
-            Ok(body) // Return the body text
+            let body_text = response.text().await?;
+            drop(permit);
+            Ok(Body {
+                url,
+                body: body_text,
+            })
         });
         tasks.push(task);
     }
 
+    let mut bodies = Vec::new();
     for task in tasks {
-        let body = task.await?;
-        let body = body?;
-        bodies.push(body);
+        match task.await {
+            Ok(result) => bodies.push(result?),
+            Err(e) => return Err(anyhow::anyhow!("Task error: {}", e)),
+        }
     }
-    info!(
-        "Fetched {} bodies in {:?} seconds",
-        bodies.len(),
-        now.elapsed(),
-    );
-
+    info!("Fetched {} bodies in {:?}", bodies.len(), now.elapsed());
     Ok(bodies)
 }
 
-async fn parse_contents(bodies: Vec<Body>) -> Result<Vec<Document>, Error> {
+// parse_contents returns a vector of documents from a vector of bodies
+//
+// function needs to be non async because scraper::Html is not Send, grmbl
+fn parse_contents(bodies: Vec<Body>) -> Result<Vec<Document>, Error> {
     let now = std::time::Instant::now();
     let mut results = Vec::new();
     for body in bodies {
@@ -156,15 +157,14 @@ async fn parse_contents(bodies: Vec<Body>) -> Result<Vec<Document>, Error> {
 }
 
 // fetch_content returns a document from a url
-pub async fn fetch_content(url: &str) -> Result<Document, Error> {
-    let resp = reqwest::get(url).await?;
+pub async fn fetch_content(url: String) -> Result<Document, Error> {
+    let resp = reqwest::get(url.clone()).await?;
     let body = resp.text().await?;
 
     let documents = parse_contents(vec![Body {
-        url: url.to_string(),
+        url: url,
         body: body,
-    }])
-    .await?;
+    }])?;
     if documents.len() != 1 {
         return Err(anyhow::anyhow!(
             "Failed to parse content, expected 1 document, got: {}",

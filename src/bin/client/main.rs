@@ -228,7 +228,7 @@ async fn main() -> Result<(), Error> {
             let llm = Llm::new(ollama);
 
             info!("Fetching {}", url);
-            let mut doc = fetch_content(&url).await?;
+            let mut doc = fetch_content(url).await?;
             info!("Fetched doc: {:?}", doc);
 
             let basic_text = doc.text.get(&Collection::Basic).ok_or(anyhow::anyhow!(

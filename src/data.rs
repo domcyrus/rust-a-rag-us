@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use text_splitter::TextSplitter;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 // FRAGMENT_SIZE is the size of a fragment
@@ -20,7 +21,7 @@ static MAX_URL_SIZE: usize = 128;
 pub static META_FRAGMENT_SIZE: usize = 384;
 
 // Collection represents a collection
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, ToSchema)]
 pub enum Collection {
     Basic,
     Summary,

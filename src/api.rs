@@ -2,7 +2,7 @@ use crate::data::Collection;
 use crate::embedding::EmbeddingProgress;
 use crate::ollama;
 use crate::progress_tracker::ProgressTracker;
-use crate::qdrant::{add_documents, create_collections, search_documents};
+use crate::qdrant::add_documents;
 use crate::retriever;
 use crate::state::AppState;
 use axum::{
@@ -26,7 +26,10 @@ pub struct StateResponse {
 }
 
 #[derive(OpenApi)]
-#[openapi(paths(get_state, upload), components(schemas(UploadParams)))]
+#[openapi(
+    paths(get_state, upload),
+    components(schemas(UploadParams, Collection))
+)]
 pub struct ApiDoc;
 
 /// get-state function returns the current progress state
@@ -110,69 +113,75 @@ pub async fn upload(
             Json("mandatory URL is empty".to_string()),
         );
     }
+
     info!("Fetching {}", url);
-
+    let start = Instant::now();
     let qdrant_client = state.app_config.qdrant_client.clone();
-    let mut docs = retriever::sitemap(&url.clone()).await.unwrap();
+    let docs = retriever::sitemap(&url.clone()).await;
+    let mut docs = match docs {
+        Ok(docs) => docs,
+        Err(e) => {
+            info!("Error fetching documents: {}", e);
+            return (StatusCode::BAD_REQUEST, Json(e.to_string()));
+        }
+    };
+    let duration = start.elapsed();
+    info!("Fetched {} docs from {} in {:?}", docs.len(), url, duration);
 
-    //let tracker = state.progress_map.clone();
+    let tracker = state.progress_map.clone();
 
     // spawn a background task
     tokio::spawn(async move {
-        //let start = Instant::now();
-        //let duration = start.elapsed();
-        //info!("Fetched {} docs from {} in {:?}", docs.len(), url, duration);
-
         info!("Creating Ollama client");
-        //let ollama = ollama_rs::Ollama::new(ollama_host.to_string(), ollama_port);
-        // let llm = ollama::Llm::new(ollama);
+        let ollama = ollama_rs::Ollama::new(ollama_host.to_string(), ollama_port);
+        let llm = ollama::Llm::new(ollama);
 
-        //let total_docs = docs.len();
-        //info!("Adding {} documents", total_docs);
+        let total_docs = docs.len();
+        info!("Adding {} documents", total_docs);
 
-        // let embedding_progress = EmbeddingProgress::new(total_docs);
+        let embedding_progress = EmbeddingProgress::new(total_docs);
 
         {
-            //let tracker = tracker.lock();
-            //tracker.unwrap().insert(id, embedding_progress);
+            let tracker = tracker.lock();
+            tracker.unwrap().insert(id, embedding_progress);
         }
 
-        //let (_handle, model) = crate::embedding::Model::spawn(tracker, id);
-        //let make_summary = filter_collections.contains(&Collection::Summary);
+        let (_handle, model) = crate::embedding::Model::spawn(tracker, id);
+        let make_summary = filter_collections.contains(&Collection::Summary);
 
-        //        for doc in docs.iter_mut() {
-        //            if make_summary {
-        //                info!("Creating summary document");
-        //                let result = doc.add_summary(&ollama_model, &llm).await;
-        //                match result {
-        //                    Ok(_) => {}
-        //                    Err(e) => {
-        //                        info!("Error adding summary: {}", e);
-        //                    }
-        //                }
-        //                let embeddings = model.encode(doc.clone()).await;
-        //                let embeddings = match embeddings {
-        //                    Ok(embeddings) => embeddings,
-        //                    Err(e) => {
-        //                        info!("Error encoding document: {}", e);
-        //                        continue;
-        //                    }
-        //                };
-        //                let result = add_documents(
-        //                    &qdrant_client,
-        //                    &base_collection,
-        //                    filter_collections.clone(),
-        //                    embeddings,
-        //                )
-        //                .await;
-        //                match result {
-        //                    Ok(_) => {}
-        //                    Err(e) => {
-        //                        info!("Error adding documents: {}", e);
-        //                    }
-        //                }
-        //            }
-        //        }
+        for doc in docs.iter_mut() {
+            if make_summary {
+                info!("Creating summary document");
+                let result = doc.add_summary(&ollama_model, &llm).await;
+                match result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Error adding summary: {}", e);
+                    }
+                }
+                let embeddings = model.encode(doc.clone()).await;
+                let embeddings = match embeddings {
+                    Ok(embeddings) => embeddings,
+                    Err(e) => {
+                        info!("Error encoding document: {}", e);
+                        continue;
+                    }
+                };
+                let result = add_documents(
+                    &qdrant_client,
+                    &base_collection,
+                    filter_collections.clone(),
+                    embeddings,
+                )
+                .await;
+                match result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Error adding documents: {}", e);
+                    }
+                }
+            }
+        }
     });
 
     (StatusCode::OK, Json(id.to_string()))
