@@ -1,6 +1,11 @@
 use crate::data::Collection;
 use crate::progress_tracker::ProgressTracker;
-use std::{collections::HashMap, sync::Mutex};
+use anyhow::{Error, Result};
+use qdrant_client::client::{QdrantClient, QdrantClientConfig};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use uuid::Uuid;
 
 pub struct AppConfig {
@@ -10,10 +15,11 @@ pub struct AppConfig {
     pub ollama_model: String,
     pub ollama_host: String,
     pub ollama_port: u16,
+    pub qdrant_client: Arc<QdrantClient>,
 }
 
 pub struct AppState<T: ProgressTracker> {
-    pub progress_map: Mutex<HashMap<Uuid, T>>,
+    pub progress_map: Arc<Mutex<HashMap<Uuid, T>>>,
     pub app_config: AppConfig,
 }
 
@@ -25,16 +31,23 @@ pub struct AppConfigInput {
     pub ollama_model: Option<String>,
     pub ollama_host: Option<String>,
     pub ollama_port: Option<u16>,
+    pub qdrant_client: Option<QdrantClient>,
 }
 
 impl<T: ProgressTracker> AppState<T> {
-    pub fn new(app_config_input: AppConfigInput) -> Self {
+    pub fn new(app_config_input: AppConfigInput) -> Result<Self, Error> {
         // TODO: define the default values in one place
         let filter_collection: Vec<Collection> = app_config_input
             .filter_collections
             .unwrap_or(vec![Collection::Basic]);
-        AppState {
-            progress_map: Mutex::new(HashMap::new()),
+        let address = "http://localhost:6334";
+        let qdrant_config = QdrantClientConfig::from_url(address);
+        let qdrant_client = match app_config_input.qdrant_client {
+            Some(qdrant_client) => qdrant_client,
+            None => QdrantClient::new(Some(qdrant_config))?,
+        };
+        Ok(AppState {
+            progress_map: Arc::new(Mutex::new(HashMap::new())),
             app_config: AppConfig {
                 address: app_config_input
                     .address
@@ -50,8 +63,9 @@ impl<T: ProgressTracker> AppState<T> {
                     .ollama_host
                     .unwrap_or("localhost".to_string()),
                 ollama_port: app_config_input.ollama_port.unwrap_or(11434),
+                qdrant_client: Arc::new(qdrant_client),
             },
-        }
+        })
     }
 
     pub fn get_all_progress(&self) -> std::sync::MutexGuard<HashMap<Uuid, T>> {
