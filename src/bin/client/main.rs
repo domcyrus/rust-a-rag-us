@@ -2,8 +2,7 @@ use anyhow::{Error, Result};
 use clap::{Parser, Subcommand};
 use log::{debug, info};
 use ollama_rs::Ollama;
-use qdrant_client::client::QdrantClient;
-use qdrant_client::client::QdrantClientConfig;
+use qdrant_client::client::{QdrantClient, QdrantClientConfig};
 use rust_a_rag_us::data::Collection;
 use rust_a_rag_us::embedding::{text_embedding_async, EmbeddingProgress, Model, EMBEDDING_SIZE};
 use rust_a_rag_us::ollama::{Llm, PROMPT};
@@ -229,7 +228,7 @@ async fn main() -> Result<(), Error> {
             let llm = Llm::new(ollama);
 
             info!("Fetching {}", url);
-            let mut doc = fetch_content(&url).await?;
+            let mut doc = fetch_content(url).await?;
             info!("Fetched doc: {:?}", doc);
 
             let basic_text = doc.text.get(&Collection::Basic).ok_or(anyhow::anyhow!(

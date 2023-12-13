@@ -1,11 +1,11 @@
-use log::info;
-use std::sync::Arc;
-
 use axum::{routing::get, routing::post, Router};
 use dotenv::dotenv;
+use log::info;
+use qdrant_client::client::{QdrantClient, QdrantClientConfig};
 use rust_a_rag_us::api::{get_state, upload, ApiDoc};
 use rust_a_rag_us::embedding::EmbeddingProgress;
 use rust_a_rag_us::state::{AppConfigInput, AppState};
+use std::sync::Arc;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -13,6 +13,11 @@ use utoipa_swagger_ui::SwaggerUi;
 async fn main() {
     dotenv().ok();
     env_logger::init();
+
+    let qdrant_client_address =
+        std::env::var("QDRANT_CLIENT_ADDRESS").unwrap_or("http://localhost:6334".to_string());
+    let qdrant_client =
+        QdrantClient::new(Some(QdrantClientConfig::from_url(&qdrant_client_address))).unwrap();
 
     let app_config_input = AppConfigInput {
         address: Some(std::env::var("ADDRESS").unwrap_or("127.0.0.1:3000".to_string())),
@@ -30,8 +35,9 @@ async fn main() {
                 .parse::<u16>()
                 .unwrap(),
         ),
+        qdrant_client: Some(qdrant_client),
     };
-    let state = Arc::new(AppState::<EmbeddingProgress>::new(app_config_input));
+    let state = Arc::new(AppState::<EmbeddingProgress>::new(app_config_input).unwrap());
     let listener = tokio::net::TcpListener::bind(state.app_config.address.as_str())
         .await
         .unwrap();

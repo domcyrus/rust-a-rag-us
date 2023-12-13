@@ -2,6 +2,8 @@
 
 A blend of "Rust", "RAG", and the whimsical "ragamuffin" or perhaps even a play on "asparagus".
 
+There is a server and client binary. Use the cargo `--bin` to choose between.
+
 ## core components
 
 - qdrant <https://github.com/qdrant/rust-client>
@@ -15,7 +17,17 @@ A blend of "Rust", "RAG", and the whimsical "ragamuffin" or perhaps even a play 
  export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
  ```
 
-## how to use it
+## how to use the server
+
+```sh
+RUST_LOG='info,rust_a_rag_us=debug' cargo run --bin server
+```
+
+### swagger ui
+
+Be default point your browser to `http://127.0.0.1:3000/swagger-ui/`
+
+## how to use the client
 
  ```text
  Usage: rust-a-rag-us [OPTIONS] <COMMAND>
@@ -66,5 +78,4 @@ You can also switch the model used by providing e.g. --ollama_model 'openhermes2
 
 - sitemap lookup does not recursively resolve sitemap pointing to another sitemap
 - the ollama-rs streaming seems to be a bit brittle and fails with: Failed to deserialize response: EOF while parsing a list at line 1 column 8186
-- no server component so far, maybe using axum?
 - make prompts configurable?

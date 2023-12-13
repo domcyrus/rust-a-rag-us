@@ -1,6 +1,9 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
-
+use crate::data::Collection;
 use crate::embedding::EmbeddingProgress;
+use crate::ollama;
+use crate::progress_tracker::ProgressTracker;
+use crate::qdrant::add_documents;
+use crate::retriever;
 use crate::state::AppState;
 use axum::{
     extract::Query,
@@ -11,6 +14,7 @@ use axum::{
 use chrono::Utc;
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
@@ -22,7 +26,10 @@ pub struct StateResponse {
 }
 
 #[derive(OpenApi)]
-#[openapi(paths(get_state, upload), components(schemas(UploadParams)))]
+#[openapi(
+    paths(get_state, upload),
+    components(schemas(UploadParams, Collection))
+)]
 pub struct ApiDoc;
 
 /// get-state function returns the current progress state
@@ -51,6 +58,8 @@ pub struct UploadParams {
     pub ollama_model: Option<String>,
     pub ollama_host: Option<String>,
     pub ollama_port: Option<u16>,
+    pub filter_collections: Option<Vec<Collection>>,
+    pub base_collection: Option<String>,
 }
 
 /// upload function starts an upload task
@@ -70,7 +79,7 @@ pub struct UploadParams {
 pub async fn upload(
     state: axum::extract::Extension<Arc<AppState<EmbeddingProgress>>>,
     upload_params: Option<Query<UploadParams>>,
-) -> Json<String> {
+) -> (StatusCode, Json<String>) {
     // create uuid
     let id = Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
@@ -89,15 +98,93 @@ pub async fn upload(
     let ollama_port = upload_params
         .ollama_port
         .unwrap_or(state.app_config.ollama_port.clone());
+    let filter_collections = upload_params
+        .filter_collections
+        .unwrap_or(state.app_config.filter_collections.clone());
+    let base_collection = upload_params
+        .base_collection
+        .unwrap_or(state.app_config.base_collection.clone());
     info!("Ollama port {}", ollama_port);
     let url = upload_params.url;
 
     if url.is_empty() {
-        // TODO return 400 bad request
-        return Json("mandatory URL is empty".to_string());
+        return (
+            StatusCode::BAD_REQUEST,
+            Json("mandatory URL is empty".to_string()),
+        );
     }
+
     info!("Fetching {}", url);
-    Json(id.to_string())
+    let start = Instant::now();
+    let qdrant_client = state.app_config.qdrant_client.clone();
+    let docs = retriever::sitemap(&url.clone()).await;
+    let mut docs = match docs {
+        Ok(docs) => docs,
+        Err(e) => {
+            info!("Error fetching documents: {}", e);
+            return (StatusCode::BAD_REQUEST, Json(e.to_string()));
+        }
+    };
+    let duration = start.elapsed();
+    info!("Fetched {} docs from {} in {:?}", docs.len(), url, duration);
+
+    let tracker = state.progress_map.clone();
+
+    // spawn a background task
+    tokio::spawn(async move {
+        info!("Creating Ollama client");
+        let ollama = ollama_rs::Ollama::new(ollama_host.to_string(), ollama_port);
+        let llm = ollama::Llm::new(ollama);
+
+        let total_docs = docs.len();
+        info!("Adding {} documents", total_docs);
+
+        let embedding_progress = EmbeddingProgress::new(total_docs);
+
+        {
+            let tracker = tracker.lock();
+            tracker.unwrap().insert(id, embedding_progress);
+        }
+
+        let (_handle, model) = crate::embedding::Model::spawn(tracker, id);
+        let make_summary = filter_collections.contains(&Collection::Summary);
+
+        for doc in docs.iter_mut() {
+            if make_summary {
+                info!("Creating summary document");
+                let result = doc.add_summary(&ollama_model, &llm).await;
+                match result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Error adding summary: {}", e);
+                    }
+                }
+                let embeddings = model.encode(doc.clone()).await;
+                let embeddings = match embeddings {
+                    Ok(embeddings) => embeddings,
+                    Err(e) => {
+                        info!("Error encoding document: {}", e);
+                        continue;
+                    }
+                };
+                let result = add_documents(
+                    &qdrant_client,
+                    &base_collection,
+                    filter_collections.clone(),
+                    embeddings,
+                )
+                .await;
+                match result {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Error adding documents: {}", e);
+                    }
+                }
+            }
+        }
+    });
+
+    (StatusCode::OK, Json(id.to_string()))
 }
 
 // AppError is a wrapper around `anyhow::Error` that implements `IntoResponse`.
