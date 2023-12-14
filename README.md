@@ -1,16 +1,25 @@
 # rust-a-rag-us
 
-A blend of "Rust", "RAG", and the whimsical "ragamuffin" or perhaps even a play on "asparagus".
+This project, developed in `rust`, offers "retrieval-augmented generation" (RAG) capabilities for content gathered from the web.
+
+Its core concept revolves around operating all essential components locally, thus avoiding reliance on external public APIs. This approach shares similarities with initiatives like privateGPT. The choice of rust as the programming language is primarily for educational exploration, rather than for performance optimization.
+
+The project's name creatively merges "Rust" and "RAG," with a playful twist reminiscent of "ragamuffin," or even an allusion to "asparagus."
+
+It comprises both a server and a client binary, with the flexibility to select either through the cargo --bin option.
 
 There is a server and client binary. Use the cargo `--bin` to choose between.
 
 ## core components
 
+- web scraper <https://github.com/causal-agent/scraper>
 - qdrant <https://github.com/qdrant/rust-client>
-- using ollama-rs
-- using embeddings from <https://github.com/guillaume-be/rust-bert>
+- ollama-rs <https://github.com/pepperoni21/ollama-rs>
+- embeddings via rust-bert <https://github.com/guillaume-be/rust-bert>
 
 ## run rust-bert
+
+In order to be able to run rust-bert on MAC:
 
  ```sh
  export LIBTORCH=$(brew --cellar pytorch)/$(brew info --json pytorch | jq -r '.[0].installed[0].version')
@@ -22,6 +31,15 @@ There is a server and client binary. Use the cargo `--bin` to choose between.
 ```sh
 RUST_LOG='info,rust_a_rag_us=debug' cargo run --bin server
 ```
+
+### server environment variables
+
+- qdrant client address, defaults to `http://localhost:6334`: QDRANT_CLIENT_ADDRESS
+- server listen address, defaults to `127.0.0.1:3000`: ADDRESS
+- base collection, defaults to `rura_collection`: BASE_COLLECTION
+- ollama model, defaults to `openhermes2.5-mistral:7b-q6_K`: OLLAMA_MODEL
+- ollama host, defaults to `localhost`: OLLAMA_HOST
+- ollama port, defaults to `11434`: OLLAMA_PORT
 
 ### swagger ui
 
